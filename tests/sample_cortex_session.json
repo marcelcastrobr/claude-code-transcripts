@@ -1,0 +1,80 @@
+{
+  "title": "Understanding SQL Connection Role and Warehouse Source",
+  "session_id": "2026-01-05T17-19-43Z-e8cd67de-fc4b-43b3-8399-e9e297e6c09d",
+  "working_directory": "/Users/test/projects/sample",
+  "history": [
+    {
+      "role": "user",
+      "id": "0d77bc67",
+      "type": "text",
+      "user_sent_time": "2026-01-05T18:20:36.564751",
+      "content": [
+        {
+          "type": "text",
+          "text": "Why is my connection set to portfolio_role?"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "id": "01093f05",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": {
+            "text": "The user is asking about their SQL connection settings.",
+            "signature": "test-signature"
+          }
+        },
+        {
+          "type": "text",
+          "text": "I'll check your Snowflake connection configuration."
+        },
+        {
+          "type": "tool_use",
+          "tool_use": {
+            "tool_use_id": "toolu_bdrk_01UXJiqKSVzfUTCvQcfGs3xn",
+            "name": "snowflake_connections_list",
+            "input": {}
+          }
+        }
+      ],
+      "request_id": "8e175a30-0c69-454c-a600-0388c7055213"
+    },
+    {
+      "role": "user",
+      "id": "2fd07918",
+      "type": null,
+      "user_sent_time": "2026-01-05T18:20:43.833334",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_result": {
+            "name": "snowflake_connections_list",
+            "tool_use_id": "toolu_bdrk_01UXJiqKSVzfUTCvQcfGs3xn",
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"active_connection\": \"portfolio_role\", \"connections\": {\"admin\": {\"account\": \"TESTACCOUNT\", \"user\": \"testuser\", \"role\": \"ACCOUNTADMIN\"}}}"
+              }
+            ],
+            "status": "success"
+          }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "id": "c0beeda6",
+      "content": [
+        {
+          "type": "text",
+          "text": "The connection name **\"portfolio_role\"** comes from your Snowflake CLI configuration file."
+        }
+      ],
+      "request_id": "f141e7d0-2bce-42d3-8f14-fd60b214cff4"
+    }
+  ],
+  "summarization": [],
+  "connection_name": null
+}

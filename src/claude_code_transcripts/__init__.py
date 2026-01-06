@@ -11,6 +11,7 @@ import tempfile
 import webbrowser
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import click
 from click_default_group import DefaultGroup
@@ -18,6 +19,9 @@ import httpx
 from jinja2 import Environment, PackageLoader
 import markdown
 import questionary
+
+# Default Cortex Code CLI conversations directory
+CORTEX_CONVERSATIONS_DIR = Path.home() / ".snowflake" / "cortex" / "conversations"
 
 # Set up Jinja2 environment
 _jinja_env = Environment(
@@ -156,6 +160,258 @@ def _get_jsonl_summary(filepath, max_length=200):
         pass
 
     return "(no summary)"
+
+
+# -----------------------------------------------------------------------------
+# Cortex Code CLI Support
+# -----------------------------------------------------------------------------
+
+
+def is_cortex_session_file(filepath):
+    """Check if a file is a Cortex Code CLI session file.
+
+    Cortex sessions are JSON files with a "history" array at the top level.
+    Claude Code sessions use either "loglines" (JSON) or JSONL format.
+
+    Returns True if the file appears to be a Cortex session file.
+    """
+    filepath = Path(filepath)
+    if filepath.suffix != ".json":
+        return False
+
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            # Read just enough to detect the format
+            content = f.read(1000)
+            if '"history"' in content and '"session_id"' in content:
+                return True
+    except (IOError, UnicodeDecodeError):
+        pass
+    return False
+
+
+def normalize_cortex_content_block(block: dict) -> dict:
+    """Normalize a Cortex content block to Claude Code format.
+
+    Cortex format differences:
+        - thinking: {"type": "thinking", "thinking": {"text": "...", "signature": "..."}}
+        - tool_use: {"type": "tool_use", "tool_use": {"tool_use_id": "...", "name": "...", "input": {...}}}
+        - tool_result: {"type": "tool_result", "tool_result": {"tool_use_id": "...", "content": [...], "name": "..."}}
+
+    Claude Code format:
+        - thinking: {"type": "thinking", "thinking": "..."}
+        - tool_use: {"type": "tool_use", "id": "...", "name": "...", "input": {...}}
+        - tool_result: {"type": "tool_result", "tool_use_id": "...", "content": "..."}
+    """
+    block_type = block.get("type")
+
+    if block_type == "thinking":
+        thinking_data = block.get("thinking", "")
+        if isinstance(thinking_data, dict):
+            # Extract text from nested dict
+            return {"type": "thinking", "thinking": thinking_data.get("text", "")}
+        return block
+
+    if block_type == "tool_use":
+        tool_use_data = block.get("tool_use", {})
+        if isinstance(tool_use_data, dict) and "tool_use_id" in tool_use_data:
+            # Flatten nested tool_use structure
+            return {
+                "type": "tool_use",
+                "id": tool_use_data.get("tool_use_id", ""),
+                "name": tool_use_data.get("name", ""),
+                "input": tool_use_data.get("input", {}),
+            }
+        return block
+
+    if block_type == "tool_result":
+        tool_result_data = block.get("tool_result", {})
+        if isinstance(tool_result_data, dict) and "tool_use_id" in tool_result_data:
+            # Flatten nested tool_result structure
+            content = tool_result_data.get("content", [])
+            # Convert content list to string if needed
+            if isinstance(content, list):
+                text_parts = []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        text_parts.append(item.get("text", ""))
+                    elif isinstance(item, str):
+                        text_parts.append(item)
+                content = "\n".join(text_parts) if text_parts else str(content)
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_result_data.get("tool_use_id", ""),
+                "content": content,
+            }
+        return block
+
+    return block
+
+
+def normalize_cortex_content(content: list) -> list:
+    """Normalize all content blocks in a Cortex content list."""
+    if not isinstance(content, list):
+        return content
+    return [normalize_cortex_content_block(block) for block in content]
+
+
+def parse_cortex_session_file(filepath):
+    """Parse a Cortex Code CLI session file and convert to standard format.
+
+    Cortex format:
+        {
+            "title": "...",
+            "session_id": "...",
+            "working_directory": "...",
+            "history": [
+                {
+                    "role": "user" | "assistant",
+                    "id": "...",
+                    "user_sent_time": "2026-01-05T18:22:29.808261",
+                    "content": [{ "type": "text", "text": "..." }]
+                }
+            ]
+        }
+
+    Returns a dict with 'loglines' key containing normalized entries
+    compatible with the existing generate_html function.
+    """
+    filepath = Path(filepath)
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    history = data.get("history", [])
+    loglines = []
+
+    for entry in history:
+        role = entry.get("role", "user")
+
+        # Handle timestamp - Cortex uses user_sent_time for user messages
+        timestamp = entry.get("user_sent_time", "")
+
+        # Normalize content blocks to Claude Code format
+        content = entry.get("content", [])
+
+        # Filter out system-reminder text blocks from user messages
+        if role == "user" and isinstance(content, list):
+            filtered_content = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text", "")
+                    # Skip system-reminder blocks
+                    if "<system-reminder>" in text and "</system-reminder>" in text:
+                        # Check if there's actual user content after filtering reminders
+                        # Extract non-reminder text
+                        import re
+
+                        cleaned = re.sub(
+                            r"<system-reminder>.*?</system-reminder>",
+                            "",
+                            text,
+                            flags=re.DOTALL,
+                        )
+                        cleaned = cleaned.strip()
+                        if cleaned:
+                            filtered_content.append({"type": "text", "text": cleaned})
+                    else:
+                        filtered_content.append(block)
+                else:
+                    filtered_content.append(block)
+            content = filtered_content
+
+        normalized_content = normalize_cortex_content(content)
+
+        # Skip entries with no content after filtering
+        if not normalized_content:
+            continue
+
+        loglines.append(
+            {
+                "type": role,
+                "timestamp": timestamp,
+                "message": {"role": role, "content": normalized_content},
+            }
+        )
+
+    return {"loglines": loglines}
+
+
+def get_cortex_session_summary(filepath, max_length=200):
+    """Extract a summary from a Cortex session file.
+
+    Returns the session title if available, otherwise the first user message.
+    """
+    filepath = Path(filepath)
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # First try to use the title
+        title = data.get("title", "")
+        if title:
+            if len(title) > max_length:
+                return title[: max_length - 3] + "..."
+            return title
+
+        # Fall back to first user message
+        history = data.get("history", [])
+        for entry in history:
+            if entry.get("role") == "user":
+                content = entry.get("content", [])
+                text = extract_text_from_content(content)
+                # Skip system-reminder text
+                if text and not text.startswith("<system-reminder>"):
+                    # Clean any embedded system-reminders
+                    import re
+
+                    text = re.sub(
+                        r"<system-reminder>.*?</system-reminder>",
+                        "",
+                        text,
+                        flags=re.DOTALL,
+                    )
+                    text = text.strip()
+                    if text:
+                        if len(text) > max_length:
+                            return text[: max_length - 3] + "..."
+                        return text
+        return "(no summary)"
+    except Exception:
+        return "(no summary)"
+
+
+def find_cortex_sessions(folder: Optional[Path] = None, limit: int = 10):
+    """Find recent Cortex Code CLI session files.
+
+    Args:
+        folder: Directory containing Cortex session files.
+                Defaults to ~/.snowflake/cortex/conversations
+        limit: Maximum number of sessions to return
+
+    Returns:
+        A list of (Path, summary) tuples sorted by modification time.
+    """
+    if folder is None:
+        folder = CORTEX_CONVERSATIONS_DIR
+
+    folder = Path(folder)
+    if not folder.exists():
+        return []
+
+    results = []
+    for f in folder.glob("*.json"):
+        # Verify it's actually a Cortex session file
+        if not is_cortex_session_file(f):
+            continue
+        summary = get_cortex_session_summary(f)
+        if summary == "(no summary)":
+            continue
+        results.append((f, summary))
+
+    # Sort by modification time, most recent first
+    results.sort(key=lambda x: x[0].stat().st_mtime, reverse=True)
+    return results[:limit]
 
 
 def find_local_sessions(folder, limit=10):
@@ -451,15 +707,18 @@ def _generate_master_index(projects, output_dir):
 def parse_session_file(filepath):
     """Parse a session file and return normalized data.
 
-    Supports both JSON and JSONL formats.
+    Supports Claude Code JSON/JSONL formats and Cortex Code CLI JSON format.
     Returns a dict with 'loglines' key containing the normalized entries.
     """
     filepath = Path(filepath)
 
     if filepath.suffix == ".jsonl":
         return _parse_jsonl_file(filepath)
+    elif is_cortex_session_file(filepath):
+        # Cortex Code CLI format
+        return parse_cortex_session_file(filepath)
     else:
-        # Standard JSON format
+        # Standard Claude Code JSON format
         with open(filepath, "r", encoding="utf-8") as f:
             return json.load(f)
 
@@ -1379,7 +1638,7 @@ def generate_html(json_path, output_dir, github_repo=None):
 @click.group(cls=DefaultGroup, default="local", default_if_no_args=True)
 @click.version_option(None, "-v", "--version", package_name="claude-code-transcripts")
 def cli():
-    """Convert Claude Code session JSON to mobile-friendly HTML pages."""
+    """Convert Claude Code or Cortex Code CLI sessions to mobile-friendly HTML pages."""
     pass
 
 
@@ -1485,6 +1744,139 @@ def local_cmd(output, output_auto, repo, gist, include_json, open_browser, limit
         shutil.copy(session_file, json_dest)
         json_size_kb = json_dest.stat().st_size / 1024
         click.echo(f"JSONL: {json_dest} ({json_size_kb:.1f} KB)")
+
+    if gist:
+        # Inject gist preview JS and create gist
+        inject_gist_preview_js(output)
+        click.echo("Creating GitHub gist...")
+        gist_id, gist_url = create_gist(output)
+        preview_url = f"https://gisthost.github.io/?{gist_id}/index.html"
+        click.echo(f"Gist: {gist_url}")
+        click.echo(f"Preview: {preview_url}")
+
+    if open_browser or auto_open:
+        index_url = (output / "index.html").resolve().as_uri()
+        webbrowser.open(index_url)
+
+
+@cli.command("cortex")
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(),
+    help="Output directory. If not specified, writes to temp dir and opens in browser.",
+)
+@click.option(
+    "-a",
+    "--output-auto",
+    is_flag=True,
+    help="Auto-name output subdirectory based on session filename (uses -o as parent, or current dir).",
+)
+@click.option(
+    "--repo",
+    help="GitHub repo (owner/name) for commit links. Auto-detected from git push output if not specified.",
+)
+@click.option(
+    "--gist",
+    is_flag=True,
+    help="Upload to GitHub Gist and output a gisthost.github.io URL.",
+)
+@click.option(
+    "--json",
+    "include_json",
+    is_flag=True,
+    help="Include the original JSON session file in the output directory.",
+)
+@click.option(
+    "--open",
+    "open_browser",
+    is_flag=True,
+    help="Open the generated index.html in your default browser (default if no -o specified).",
+)
+@click.option(
+    "--limit",
+    default=10,
+    help="Maximum number of sessions to show (default: 10)",
+)
+@click.option(
+    "--source",
+    type=click.Path(exists=True),
+    help=f"Source directory for Cortex sessions (default: {CORTEX_CONVERSATIONS_DIR})",
+)
+def cortex_cmd(
+    output, output_auto, repo, gist, include_json, open_browser, limit, source
+):
+    """Select and convert a Snowflake Cortex Code CLI session to HTML.
+
+    Cortex Code CLI sessions are stored as JSON files in ~/.snowflake/cortex/conversations.
+    """
+    if source:
+        conversations_folder = Path(source)
+    else:
+        conversations_folder = CORTEX_CONVERSATIONS_DIR
+
+    if not conversations_folder.exists():
+        click.echo(f"Conversations folder not found: {conversations_folder}")
+        click.echo("No Cortex Code CLI sessions available.")
+        click.echo(
+            "\nNote: Cortex Code CLI stores sessions in ~/.snowflake/cortex/conversations/"
+        )
+        return
+
+    click.echo("Loading Cortex Code CLI sessions...")
+    results = find_cortex_sessions(conversations_folder, limit=limit)
+
+    if not results:
+        click.echo("No Cortex Code CLI sessions found.")
+        return
+
+    # Build choices for questionary
+    choices = []
+    for filepath, summary in results:
+        stat = filepath.stat()
+        mod_time = datetime.fromtimestamp(stat.st_mtime)
+        size_kb = stat.st_size / 1024
+        date_str = mod_time.strftime("%Y-%m-%d %H:%M")
+        # Truncate summary if too long
+        if len(summary) > 50:
+            summary = summary[:47] + "..."
+        display = f"{date_str}  {size_kb:5.0f} KB  {summary}"
+        choices.append(questionary.Choice(title=display, value=filepath))
+
+    selected = questionary.select(
+        "Select a Cortex session to convert:",
+        choices=choices,
+    ).ask()
+
+    if selected is None:
+        click.echo("No session selected.")
+        return
+
+    session_file = selected
+
+    # Determine output directory and whether to open browser
+    # If no -o specified, use temp dir and open browser by default
+    auto_open = output is None and not gist and not output_auto
+    if output_auto:
+        # Use -o as parent dir (or current dir), with auto-named subdirectory
+        parent_dir = Path(output) if output else Path(".")
+        output = parent_dir / session_file.stem
+    elif output is None:
+        output = Path(tempfile.gettempdir()) / f"cortex-session-{session_file.stem}"
+
+    output = Path(output)
+    generate_html(session_file, output, github_repo=repo)
+
+    # Show output directory
+    click.echo(f"Output: {output.resolve()}")
+
+    # Copy JSON file to output directory if requested
+    if include_json:
+        output.mkdir(exist_ok=True)
+        json_dest = output / session_file.name
+        shutil.copy(session_file, json_dest)
+        json_size_kb = json_dest.stat().st_size / 1024
+        click.echo(f"JSON: {json_dest} ({json_size_kb:.1f} KB)")
 
     if gist:
         # Inject gist preview JS and create gist

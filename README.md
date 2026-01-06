@@ -5,7 +5,7 @@
 [![Tests](https://github.com/simonw/claude-code-transcripts/workflows/Test/badge.svg)](https://github.com/simonw/claude-code-transcripts/actions?query=workflow%3ATest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/simonw/claude-code-transcripts/blob/main/LICENSE)
 
-Convert Claude Code session files (JSON or JSONL) to clean, mobile-friendly HTML pages with pagination.
+Convert Claude Code and Snowflake Cortex Code CLI session files to clean, mobile-friendly HTML pages with pagination.
 
 [Example transcript](https://static.simonwillison.net/static/2025/claude-code-microjs/index.html) produced using this tool.
 
@@ -24,11 +24,12 @@ uvx claude-code-transcripts --help
 
 ## Usage
 
-This tool converts Claude Code session files into browseable multi-page HTML transcripts.
+This tool converts Claude Code and Cortex Code CLI session files into browseable multi-page HTML transcripts.
 
-There are four commands available:
+There are five commands available:
 
 - `local` (default) - select from local Claude Code sessions stored in `~/.claude/projects`
+- `cortex` - select from local Snowflake Cortex Code CLI sessions stored in `~/.snowflake/cortex/conversations`
 - `web` - select from web sessions via the Claude API
 - `json` - convert a specific JSON or JSONL session file
 - `all` - convert all local sessions to a browsable HTML archive
@@ -70,6 +71,41 @@ Use `--limit` to control how many sessions are shown (default: 10):
 
 ```bash
 claude-code-transcripts local --limit 20
+```
+
+### Cortex Code CLI sessions
+
+Snowflake Cortex Code CLI sessions are stored as JSON files in `~/.snowflake/cortex/conversations`. Use the `cortex` command to select from recent sessions:
+
+```bash
+claude-code-transcripts cortex
+```
+
+Options specific to the cortex command:
+
+- `--source DIRECTORY` - source directory for Cortex sessions (default: `~/.snowflake/cortex/conversations`)
+- `--limit N` - maximum number of sessions to show (default: 10)
+
+Examples:
+
+```bash
+# Interactive session picker
+claude-code-transcripts cortex
+
+# Use custom source directory
+claude-code-transcripts cortex --source /path/to/conversations
+
+# Convert and open in browser
+claude-code-transcripts cortex --open
+
+# Publish to GitHub Gist
+claude-code-transcripts cortex --gist
+```
+
+The `json` command also auto-detects Cortex Code CLI JSON files, so you can convert them directly:
+
+```bash
+claude-code-transcripts json ~/.snowflake/cortex/conversations/session.json -o ./output
 ```
 
 ### Web sessions
