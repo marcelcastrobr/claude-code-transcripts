@@ -1460,12 +1460,19 @@ def generate_index_pagination_html(total_pages):
     return _macros.index_pagination(total_pages)
 
 
-def generate_html(json_path, output_dir, github_repo=None):
+def generate_html(json_path, output_dir, github_repo=None, transcript_type=None):
     output_dir = Path(output_dir)
     output_dir.mkdir(exist_ok=True)
 
     # Load session file (supports both JSON and JSONL)
     data = parse_session_file(json_path)
+
+    # Auto-detect transcript type if not provided
+    if transcript_type is None:
+        if is_cortex_session_file(json_path):
+            transcript_type = "Cortex Code"
+        else:
+            transcript_type = "Claude Code"
 
     loglines = data.get("loglines", [])
 
@@ -1543,6 +1550,7 @@ def generate_html(json_path, output_dir, github_repo=None):
             total_pages=total_pages,
             pagination_html=pagination_html,
             messages_html="".join(messages_html),
+            transcript_type=transcript_type,
         )
         (output_dir / f"page-{page_num:03d}.html").write_text(
             page_content, encoding="utf-8"
@@ -1627,6 +1635,7 @@ def generate_html(json_path, output_dir, github_repo=None):
         total_commits=total_commits,
         total_pages=total_pages,
         index_items_html="".join(index_items),
+        transcript_type=transcript_type,
     )
     index_path = output_dir / "index.html"
     index_path.write_text(index_content, encoding="utf-8")
@@ -2069,7 +2078,9 @@ def format_session_for_display(session_data):
     return f"{session_id}  {created_at[:19] if created_at else 'N/A':19}  {title}"
 
 
-def generate_html_from_session_data(session_data, output_dir, github_repo=None):
+def generate_html_from_session_data(
+    session_data, output_dir, github_repo=None, transcript_type="Claude Code"
+):
     """Generate HTML from session data dict (instead of file path)."""
     output_dir = Path(output_dir)
     output_dir.mkdir(exist_ok=True, parents=True)
@@ -2146,6 +2157,7 @@ def generate_html_from_session_data(session_data, output_dir, github_repo=None):
             total_pages=total_pages,
             pagination_html=pagination_html,
             messages_html="".join(messages_html),
+            transcript_type=transcript_type,
         )
         (output_dir / f"page-{page_num:03d}.html").write_text(
             page_content, encoding="utf-8"
@@ -2230,6 +2242,7 @@ def generate_html_from_session_data(session_data, output_dir, github_repo=None):
         total_commits=total_commits,
         total_pages=total_pages,
         index_items_html="".join(index_items),
+        transcript_type=transcript_type,
     )
     index_path = output_dir / "index.html"
     index_path.write_text(index_content, encoding="utf-8")

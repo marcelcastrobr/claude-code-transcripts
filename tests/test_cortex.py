@@ -397,6 +397,21 @@ class TestGenerateHtmlWithCortex:
         # The title or user question should appear
         assert "portfolio_role" in index_html or "connection" in index_html.lower()
 
+    def test_cortex_file_uses_cortex_code_title(self, output_dir):
+        """Test that Cortex files use 'Cortex Code transcript' as the title."""
+        fixture_path = Path(__file__).parent / "sample_cortex_session.json"
+        generate_html(fixture_path, output_dir)
+
+        index_html = (output_dir / "index.html").read_text()
+        page_html = (output_dir / "page-001.html").read_text()
+
+        # Check that Cortex Code appears in title and header
+        assert "Cortex Code transcript" in index_html
+        assert "Cortex Code transcript" in page_html
+        # Ensure Claude Code is NOT in the title
+        assert "Claude Code transcript" not in index_html
+        assert "Claude Code transcript" not in page_html
+
     def test_normalizes_cortex_tool_blocks(self, output_dir, tmp_path):
         """Test that Cortex tool blocks are properly normalized for rendering."""
         session_file = tmp_path / "session.json"
